@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-This repo is in the **pre-implementation phase**. The only authoritative content is `docs/PLAN.md`, a detailed build spec for a local MCP server that ingests personal WHOOP data into SQLite and exposes it to Claude via FastMCP tools. Read `docs/PLAN.md` in full before making changes — it defines the architecture, phases, and the API constraints listed below.
+Phases 0–3 are complete and committed: OAuth with rotating-refresh persistence (`auth.py`, `tokens.py`), typed v2 API client with pagination + 401 retry (`client.py`, `models.py`), SQLite schema with idempotent upserts and `sync_state` (`db.py`), and backfill + incremental sync (`sync.py`). Next up is Phase 4 (MCP server, `server.py`), then Phase 5 (webhooks, `webhooks.py`).
 
-When building, follow the phase order in `docs/PLAN.md` (Phase 0 OAuth → 1 API client → 2 DB → 3 sync → 4 MCP server → 5 webhooks). Do not skip ahead.
+`docs/PLAN.md` is the authoritative build spec — read it in full before making changes. Follow the phase order; do not skip ahead.
 
 ## Architecture (must preserve three-layer separation)
 
@@ -34,27 +34,34 @@ Python 3.11+, `httpx`, MCP Python SDK (`mcp`, FastMCP), SQLite, `pydantic`, `pyt
 
 ## Configuration
 
-`.env` is gitignored. Confirm `.env`, `*.db`, and token files are in `.gitignore` BEFORE creating them. Required keys:
+`.env` is gitignored. Required keys:
 
 ```
 WHOOP_CLIENT_ID=
 WHOOP_CLIENT_SECRET=
 WHOOP_REDIRECT_URI=http://localhost:8080/callback
-WHOOP_DB_PATH=./whoop.db
+WHOOP_DB_PATH=./whoop.db          # optional, this is the default
+WHOOP_TOKENS_PATH=./.whoop_tokens.json  # optional, this is the default
 ```
 
 Never log the client secret or tokens.
 
+## Persistence (durable facts for later phases)
+
+- **Tokens** live at `WHOOP_TOKENS_PATH` (default `./.whoop_tokens.json`), written atomically with mode 0600, gitignored. Every refresh persists the rotated refresh token in place; the file is the integration's single source of authentication truth.
+- **Database** lives at `WHOOP_DB_PATH` (default `./whoop.db`), WAL mode, gitignored. Connections opened via `db.connect()` use autocommit + explicit `db.transaction()` blocks.
+- **Primary keys** are WHOOP's own ids: `cycles.id` int, `sleep.id` / `workouts.id` UUID, `recovery.sleep_id` UUID (recovery is keyed by the associated *sleep* UUID, not by cycle). Re-fetching the same record upserts in place.
+- **`sync_state`** is keyed by the resource-name string `"cycles" | "sleep" | "workouts" | "recovery"`. It stores `last_synced_at` (wall clock at sync time) and `last_record_updated_at` (max `updated_at` from the batch — informational; not used as a filter). Incremental sync derives the next API window as `last_synced_at - overlap_days` (default 2) → now, with one-day-plus overlap so late-finalized scores get re-fetched. The WHOOP API filter is on the record's start timestamp, not on `updated_at`, which is why the overlap matters.
+
 ## Commands
 
-Once `pyproject.toml` exists, expected commands (update this section as tooling lands):
-
-- Install: `uv sync` (or `pip install -e .`)
-- Run OAuth bootstrap: `uv run python -m whoop_mcp.auth`
-- Run backfill: `uv run python -m whoop_mcp.sync --backfill`
-- Run incremental sync: `uv run python -m whoop_mcp.sync`
-- Run MCP server: `uv run python -m whoop_mcp.server`
-- Run webhook receiver (Phase 5): `uv run uvicorn whoop_mcp.webhooks:app --port 8081`
+- Install: `uv sync`
+- One-time OAuth authorization (opens a browser, catches the redirect, persists tokens): `uv run whoop-auth`
+- Smoke-test the API client against a small window: `uv run whoop-client` (defaults to last 7 days)
+- Historical backfill (run once after `whoop-auth`): `uv run whoop-sync --backfill` (or `--backfill --start YYYY-MM-DD`)
+- Incremental sync (daily driver): `uv run whoop-sync` (or `whoop-sync --overlap-days 7` to widen the re-fetch window)
+- Run MCP server (Phase 4, TODO): `uv run python -m whoop_mcp.server`
+- Run webhook receiver (Phase 5, TODO): `uv run uvicorn whoop_mcp.webhooks:app --port 8081`
 - Tests: `uv run pytest` (single test: `uv run pytest path/to/test.py::test_name`)
 
 ## Verification
