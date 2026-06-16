@@ -18,6 +18,7 @@ dev = [
 [project.scripts]
 whoop-auth = "whoop_mcp.auth:main"
 whoop-client = "whoop_mcp.client:main"
+whoop-sync = "whoop_mcp.sync:main"
 
 [build-system]
 requires = ["hatchling"]
