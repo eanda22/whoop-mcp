@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Phases 0–3 are complete and committed: OAuth with rotating-refresh persistence (`auth.py`, `tokens.py`), typed v2 API client with pagination + 401 retry (`client.py`, `models.py`), SQLite schema with idempotent upserts and `sync_state` (`db.py`), and backfill + incremental sync (`sync.py`). Next up is Phase 4 (MCP server, `server.py`), then Phase 5 (webhooks, `webhooks.py`).
+Phases 0–4 are complete and committed: OAuth with rotating-refresh persistence (`auth.py`, `tokens.py`), typed v2 API client with pagination + 401 retry (`client.py`, `models.py`), SQLite schema with idempotent upserts and `sync_state` (`db.py`), backfill + incremental sync (`sync.py`), and a FastMCP server exposing the DB to Claude (`server.py`). Next up is Phase 5 (webhooks, `webhooks.py`).
 
 `docs/PLAN.md` is the authoritative build spec — read it in full before making changes. Follow the phase order; do not skip ahead.
 
@@ -15,6 +15,19 @@ Phases 0–3 are complete and committed: OAuth with rotating-refresh persistence
 3. **MCP server** (`server.py`) — FastMCP tools that READ FROM THE DB, not from the WHOOP API. The only tool that hits the API is `sync_whoop_data`.
 
 The Phase 5 webhook receiver (`webhooks.py`) is a **separate process** from the MCP server. They share only the database. Do not merge them.
+
+### MCP tools exposed by `server.py`
+
+- `sync_whoop_data(since?)` — the only tool that hits the WHOOP API; delegates to `sync.sync()` (incremental) or `sync.backfill(since)`. Stdout from the sync layer is redirected to stderr.
+- `get_recovery(start, end)` — daily recovery scores joined to the night's sleep window.
+- `get_sleep(start, end)` — sleep records (nights + naps); includes derived `total_sleep_milli`.
+- `get_cycles(start, end)` — physiological cycles (day strain).
+- `get_workouts(start, end, sport?)` — workouts with optional case-sensitive sport filter.
+- `get_daily_summary(date)` — recovery + main night-sleep + cycle + workouts for one date.
+- `compare_periods(start_a, end_a, start_b, end_b)` — averaged metrics across two ranges with `delta = b - a`.
+- `get_trends(metric, window=7, days=90)` — daily series + rolling mean for one of: recovery_score, hrv, resting_heart_rate, sleep_performance, sleep_efficiency, strain.
+
+Date inputs are `YYYY-MM-DD` strings parsed as UTC midnight. Range semantics are inclusive of both endpoints (the SQL filter is half-open with `end + 1 day` exclusive).
 
 ## WHOOP API constraints (easy to get wrong)
 
@@ -60,7 +73,8 @@ Never log the client secret or tokens.
 - Smoke-test the API client against a small window: `uv run whoop-client` (defaults to last 7 days)
 - Historical backfill (run once after `whoop-auth`): `uv run whoop-sync --backfill` (or `--backfill --start YYYY-MM-DD`)
 - Incremental sync (daily driver): `uv run whoop-sync` (or `whoop-sync --overlap-days 7` to widen the re-fetch window)
-- Run MCP server (Phase 4, TODO): `uv run python -m whoop_mcp.server`
+- Run MCP server: `uv run whoop-mcp` (or `uv run python -m whoop_mcp.server`). Stdio transport; all logs go to stderr because stdout is reserved for JSON-RPC.
+- Register with Claude Code: `claude mcp add whoop-mcp -- uv --directory /Users/emiranda/Documents/coding_projects/whoop-mcp run python -m whoop_mcp.server` (then `claude mcp list` to verify; restart Claude session to pick it up).
 - Run webhook receiver (Phase 5, TODO): `uv run uvicorn whoop_mcp.webhooks:app --port 8081`
 - Tests: `uv run pytest` (single test: `uv run pytest path/to/test.py::test_name`)
 

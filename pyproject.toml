@@ -8,6 +8,7 @@ dependencies = [
     "httpx>=0.27",
     "python-dotenv>=1.0",
     "pydantic>=2.7",
+    "mcp[cli]>=1.2",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,7 @@ dev = [
 whoop-auth = "whoop_mcp.auth:main"
 whoop-client = "whoop_mcp.client:main"
 whoop-sync = "whoop_mcp.sync:main"
+whoop-mcp = "whoop_mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]
